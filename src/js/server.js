@@ -14,8 +14,8 @@ const connectDB = require('../config/database');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 
+// Criar app Express
 const app = express();
-const port = process.env.PORT || 3000;
 
 // Configurar diretórios absolutos
 const rootDir = path.resolve(__dirname, '../..');
@@ -31,15 +31,14 @@ app.use('/css', express.static(cssDir));
 app.set('view engine', 'ejs');
 app.set('views', viewsDir);
 
-// Inicializar conexão com MongoDB
+// Configuração do MongoDB Store
 let mongoStore;
 
-(async () => {
-    try {
+// Função para inicializar o MongoDB e configurações
+async function initializeApp() {
+    if (!mongoStore) {
         await connectDB();
-        console.log('MongoDB conectado inicialmente');
         
-        // Configurar session store após conexão bem-sucedida
         mongoStore = MongoStore.create({
             mongoUrl: process.env.MONGODB_URI,
             ttl: 30 * 24 * 60 * 60 // 30 dias em segundos
@@ -56,15 +55,8 @@ let mongoStore;
                 maxAge: 30 * 24 * 60 * 60 * 1000 // 30 dias
             }
         }));
-
-        // Iniciar servidor após configuração bem-sucedida
-        app.listen(port, () => {
-            console.log(`Servidor rodando na porta ${port}`);
-        });
-    } catch (error) {
-        console.error('Erro na inicialização:', error);
     }
-})();
+}
 
 // Middleware para verificar conexão MongoDB
 app.use(async (req, res, next) => {
@@ -720,4 +712,17 @@ process.on('uncaughtException', (error) => {
     server.close(() => {
         process.exit(1);
     });
-}); 
+});
+
+// Exportar o handler para Vercel
+module.exports = async (req, res) => {
+    try {
+        await initializeApp();
+        return app(req, res);
+    } catch (error) {
+        console.error('Erro na inicialização:', error);
+        return res.status(500).json({ 
+            error: 'Erro interno do servidor' 
+        });
+    }
+}; 
