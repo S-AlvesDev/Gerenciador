@@ -105,7 +105,7 @@ function requireLogin(req, res, next) {
     if (req.session.userId) {
         next();
     } else {
-        res.redirect('/login');
+        return res.redirect('/login');
     }
 }
 
@@ -125,7 +125,7 @@ app.use((err, req, res, next) => {
         });
     }
     
-    res.status(500).render('error', { 
+    return res.status(500).render('error', { 
         error: process.env.NODE_ENV === 'production' 
             ? 'Ocorreu um erro interno no servidor.' 
             : err.message 
@@ -135,10 +135,12 @@ app.use((err, req, res, next) => {
 // Rotas
 app.get('/', (req, res) => {
     try {
-        res.render('login', { messages: {} });
+        return res.render('login', { messages: {} });
     } catch (error) {
         console.error('Erro ao renderizar página de login:', error);
-        res.status(500).send('Erro ao carregar a página');
+        return res.status(500).render('error', { 
+            error: 'Erro ao carregar a página'
+        });
     }
 });
 
@@ -147,7 +149,7 @@ app.get('/login', (req, res) => {
     if (req.query.verification_pending === 'true') {
         messages.success = 'Registro realizado! Por favor, verifique seu email para ativar sua conta.';
     }
-    res.render('login', { messages });
+    return res.render('login', { messages });
 });
 
 app.post('/login', async (req, res) => {
@@ -166,9 +168,9 @@ app.post('/login', async (req, res) => {
             }
 
             req.session.userId = user._id;
-            res.redirect('/dashboard');
+            return res.redirect('/dashboard');
         } else {
-            res.render('login', { 
+            return res.render('login', { 
                 messages: { 
                     error: 'Email ou senha incorretos' 
                 } 
@@ -176,7 +178,7 @@ app.post('/login', async (req, res) => {
         }
     } catch (error) {
         console.error('Erro no login:', error);
-        res.render('login', { 
+        return res.render('login', { 
             messages: { 
                 error: 'Erro ao fazer login' 
             } 
@@ -185,7 +187,7 @@ app.post('/login', async (req, res) => {
 });
 
 app.get('/register', (req, res) => {
-    res.render('register', { messages: {} });
+    return res.render('register', { messages: {} });
 });
 
 app.post('/register', async (req, res) => {
@@ -220,14 +222,6 @@ app.post('/register', async (req, res) => {
         // Salvar usuário
         await user.save();
 
-        // Enviar para página de sucesso imediatamente
-        res.render('login', { 
-            messages: { 
-                success: 'Registro realizado! Por favor, verifique seu email para ativar sua conta.',
-                showResend: true
-            } 
-        });
-
         // Enviar email de verificação em background
         const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
         const mailOptions = {
@@ -245,9 +239,17 @@ app.post('/register', async (req, res) => {
             console.error('Erro ao enviar email de verificação:', err);
         });
 
+        // Enviar para página de sucesso
+        return res.render('login', { 
+            messages: { 
+                success: 'Registro realizado! Por favor, verifique seu email para ativar sua conta.',
+                showResend: true
+            } 
+        });
+
     } catch (error) {
         console.error('Erro no registro:', error);
-        res.render('register', { 
+        return res.render('register', { 
             messages: { 
                 error: 'Erro ao registrar usuário' 
             } 
@@ -269,13 +271,25 @@ app.get('/verify/:token', async (req, res) => {
         );
 
         if (!user) {
-            return res.render('login', { messages: { error: 'Token de verificação inválido' } });
+            return res.render('login', { 
+                messages: { 
+                    error: 'Token de verificação inválido' 
+                } 
+            });
         }
 
-        res.render('login', { messages: { success: 'Email verificado com sucesso! Você já pode fazer login.' } });
+        return res.render('login', { 
+            messages: { 
+                success: 'Email verificado com sucesso! Você já pode fazer login.' 
+            } 
+        });
     } catch (error) {
         console.error('Erro ao verificar email:', error);
-        res.render('login', { messages: { error: 'Erro ao verificar email' } });
+        return res.render('login', { 
+            messages: { 
+                error: 'Erro ao verificar email' 
+            } 
+        });
     }
 });
 
@@ -421,13 +435,13 @@ app.post('/resend-verification', async (req, res) => {
         
         await transporter.sendMail(mailOptions);
         
-        res.json({ 
+        return res.json({ 
             success: true, 
             message: 'Email de verificação reenviado com sucesso' 
         });
     } catch (error) {
         console.error('Erro ao reenviar email de verificação:', error);
-        res.json({ 
+        return res.json({ 
             success: false, 
             message: 'Erro ao reenviar email de verificação' 
         });
@@ -435,7 +449,7 @@ app.post('/resend-verification', async (req, res) => {
 });
 
 // Rota para adicionar transação
-app.post('/transaction/add', requireLogin, upload.single('receipt'), (req, res) => {
+app.post('/transaction/add', requireLogin, upload.single('receipt'), async (req, res) => {
     const userId = req.session.userId;
     const { type, amount, description, category, recurring, recurrencePeriod } = req.body;
     const date = new Date().toISOString();
@@ -449,25 +463,19 @@ app.post('/transaction/add', requireLogin, upload.single('receipt'), (req, res) 
         });
     }
 
-    // Inserir transação no banco de dados
-    const transaction = new Transaction({
-        user_id: userId,
-        type,
-        amount,
-        description,
-        category,
-        date,
-        receipt_path: receiptUrl
-    });
+    try {
+        // Inserir transação no banco de dados
+        const transaction = new Transaction({
+            user_id: userId,
+            type,
+            amount,
+            description,
+            category,
+            date,
+            receipt_path: receiptUrl
+        });
 
-    transaction.save((err, result) => {
-        if (err) {
-            console.error('Erro ao adicionar transação:', err);
-            return res.status(500).json({ 
-                success: false, 
-                message: 'Erro ao adicionar transação' 
-            });
-        }
+        await transaction.save();
 
         // Se for uma transação recorrente, agendar próximas ocorrências
         if (recurring === 'on') {
@@ -476,8 +484,14 @@ app.post('/transaction/add', requireLogin, upload.single('receipt'), (req, res) 
         }
 
         // Redirecionar para o dashboard com mensagem de sucesso
-        res.redirect('/dashboard?success=true');
-    });
+        return res.redirect('/dashboard?success=true');
+    } catch (error) {
+        console.error('Erro ao adicionar transação:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Erro ao adicionar transação' 
+        });
+    }
 });
 
 // Rota para criar conta de teste (já verificada)
@@ -535,7 +549,7 @@ app.get('/create-test-account', (req, res) => {
 
 // Rota para página de recuperação de senha
 app.get('/forgot-password', (req, res) => {
-    res.render('forgot-password', { messages: {} });
+    return res.render('forgot-password', { messages: {} });
 });
 
 // Rota para solicitar recuperação de senha
@@ -563,13 +577,6 @@ app.post('/forgot-password', async (req, res) => {
             }
         );
         
-        // Enviar resposta imediatamente
-        res.render('forgot-password', { 
-            messages: { 
-                success: 'Email de recuperação enviado. Por favor, verifique sua caixa de entrada.' 
-            }
-        });
-
         // Enviar email em background
         const resetLink = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
         const emailHtml = `
@@ -591,10 +598,17 @@ app.post('/forgot-password', async (req, res) => {
         transporter.sendMail(mailOptions).catch(err => {
             console.error('Erro ao enviar email de recuperação:', err);
         });
+
+        // Enviar resposta imediatamente
+        return res.render('forgot-password', { 
+            messages: { 
+                success: 'Email de recuperação enviado. Por favor, verifique sua caixa de entrada.' 
+            }
+        });
         
     } catch (error) {
         console.error('Erro ao solicitar recuperação de senha:', error);
-        res.render('forgot-password', { 
+        return res.render('forgot-password', { 
             messages: { 
                 error: 'Erro ao solicitar recuperação de senha' 
             }
@@ -603,21 +617,31 @@ app.post('/forgot-password', async (req, res) => {
 });
 
 // Rota para página de redefinição de senha
-app.get('/reset-password/:token', (req, res) => {
+app.get('/reset-password/:token', async (req, res) => {
     const { token } = req.params;
     
-    // Verificar se o token existe e não expirou (1 hora de validade)
-    const oneHourAgo = new Date(Date.now() - 3600000); // 1 hora atrás
-    
-    User.findOne({ reset_token: token, reset_token_expires: { $gt: oneHourAgo } }, (err, user) => {
-        if (err || !user) {
+    try {
+        // Verificar se o token existe e não expirou (1 hora de validade)
+        const oneHourAgo = new Date(Date.now() - 3600000); // 1 hora atrás
+        
+        const user = await User.findOne({ 
+            reset_token: token, 
+            reset_token_expires: { $gt: oneHourAgo } 
+        });
+
+        if (!user) {
             return res.render('login', { 
                 messages: { error: 'Link de recuperação inválido ou expirado' }
             });
         }
         
-        res.render('reset-password', { token, messages: {} });
-    });
+        return res.render('reset-password', { token, messages: {} });
+    } catch (error) {
+        console.error('Erro ao verificar token:', error);
+        return res.render('login', { 
+            messages: { error: 'Erro ao verificar token de recuperação' }
+        });
+    }
 });
 
 // Rota para processar redefinição de senha
@@ -655,12 +679,12 @@ app.post('/reset-password/:token', async (req, res) => {
             });
         }
         
-        res.render('login', { 
+        return res.render('login', { 
             messages: { success: 'Senha redefinida com sucesso! Você já pode fazer login.' }
         });
     } catch (error) {
         console.error('Erro ao redefinir senha:', error);
-        res.render('reset-password', { 
+        return res.render('reset-password', { 
             token,
             messages: { error: 'Erro ao redefinir senha' }
         });
@@ -669,13 +693,14 @@ app.post('/reset-password/:token', async (req, res) => {
 
 // Rota de logout
 app.get('/logout', (req, res) => {
-    // Destruir a sessão
     req.session.destroy((err) => {
         if (err) {
             console.error('Erro ao fazer logout:', err);
+            return res.status(500).render('error', {
+                error: 'Erro ao fazer logout'
+            });
         }
-        // Redirecionar para a página de login
-        res.redirect('/login');
+        return res.redirect('/login');
     });
 });
 
