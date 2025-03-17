@@ -24,18 +24,17 @@ const publicDir = path.join(rootDir, 'public');
 const cssDir = path.join(rootDir, 'src/css');
 
 // Middleware para logging de erros
-app.use((req, res, next) => {
-    const originalSend = res.send;
-    res.send = function (data) {
-        console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Status: ${res.statusCode}`);
-        return originalSend.apply(res, arguments);
-    };
-    next();
-});
-
-// Connect to MongoDB
-connectDB().catch(err => {
-    console.error('Erro ao conectar ao MongoDB:', err);
+app.use(async (req, res, next) => {
+    try {
+        // Garantir conexão com MongoDB antes de cada requisição
+        await connectDB();
+        next();
+    } catch (error) {
+        console.error('Erro ao conectar ao MongoDB:', error);
+        res.status(500).render('error', { 
+            error: 'Erro ao conectar ao banco de dados. Por favor, tente novamente.'
+        });
+    }
 });
 
 // Middleware
@@ -90,7 +89,22 @@ function requireLogin(req, res, next) {
 
 // Middleware de tratamento de erros
 app.use((err, req, res, next) => {
-    console.error(err.stack);
+    console.error('Erro não tratado:', err);
+    
+    // Verificar se é um erro de timeout
+    if (err.name === 'TimeoutError') {
+        return res.status(504).render('error', {
+            error: 'A operação demorou muito tempo. Por favor, tente novamente.'
+        });
+    }
+    
+    // Verificar se é um erro de conexão com MongoDB
+    if (err.name === 'MongoError' || err.name === 'MongooseError') {
+        return res.status(500).render('error', {
+            error: 'Erro de conexão com o banco de dados. Por favor, tente novamente.'
+        });
+    }
+    
     res.status(500).render('error', { 
         error: process.env.NODE_ENV === 'production' 
             ? 'Ocorreu um erro interno no servidor.' 
