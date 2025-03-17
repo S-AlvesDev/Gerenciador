@@ -81,6 +81,16 @@ function requireLogin(req, res, next) {
     }
 }
 
+// Função para obter a URL base do site
+function getBaseUrl(req) {
+    if (process.env.NODE_ENV === 'production') {
+        // Use a URL do Vercel em produção
+        return process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : req.protocol + '://' + req.get('host');
+    }
+    // Use localhost em desenvolvimento
+    return req.protocol + '://' + req.get('host');
+}
+
 // Rotas
 app.get('/', (req, res) => {
     return res.render('login', { messages: {} });
@@ -176,7 +186,10 @@ app.post('/register', async (req, res) => {
         console.log('Usuário criado com sucesso:', email);
 
         // Preparar email de verificação
-        const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
+        const baseUrl = getBaseUrl(req);
+        const verificationLink = `${baseUrl}/verify/${verificationToken}`;
+        console.log('Link de verificação:', verificationLink);
+
         const mailOptions = {
             from: `"Gestão Financeira" <${process.env.EMAIL_USER}>`,
             to: email,
@@ -366,7 +379,8 @@ app.post('/resend-verification', async (req, res) => {
         await user.save();
         
         // Enviar email de verificação
-        const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
+        const baseUrl = getBaseUrl(req);
+        const verificationLink = `${baseUrl}/verify/${verificationToken}`;
         const emailHtml = `
             <h1>Verificação de Email - Gestão Financeira</h1>
             <p>Olá ${user.name},</p>
@@ -527,7 +541,8 @@ app.post('/forgot-password', async (req, res) => {
         );
         
         // Enviar email em background
-        const resetLink = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
+        const baseUrl = getBaseUrl(req);
+        const resetLink = `${baseUrl}/reset-password/${resetToken}`;
         const emailHtml = `
             <h1>Recuperação de Senha - Gestão Financeira</h1>
             <p>Olá ${user.name},</p>
