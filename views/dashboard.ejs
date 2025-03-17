@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Gestão Financeira</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <nav class="nav-menu">
+                <h1 style="color: var(--white);">Gestão Financeira</h1>
+                <div class="nav-buttons">
+                    <button class="theme-toggle" onclick="toggleTheme()" title="Alternar Tema">
+                        <svg id="theme-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path class="sun" d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42M12 6a6 6 0 0 0 0 12 6 6 0 0 0 0-12z"/>
+                            <path class="moon" style="display: none;" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                        </svg>
+                    </button>
+                    <a href="/logout" class="logout-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
+                        </svg>
+                        Sair
+                    </a>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <% if (new URLSearchParams(global.url?.search || '').get('success') === 'true') { %>
+            <div class="alert alert-success">
+                Transação adicionada com sucesso!
+            </div>
+        <% } %>
+
+        <!-- Resumo Financeiro -->
+        <div class="dashboard-grid">
+            <div class="card">
+                <h3>Saldo Total</h3>
+                <p class="amount">R$ <%= totalBalance || '0.00' %></p>
+            </div>
+            <div class="card">
+                <h3>Receitas do Mês</h3>
+                <p class="amount" style="color: var(--success);">R$ <%= monthlyIncome || '0.00' %></p>
+            </div>
+            <div class="card">
+                <h3>Despesas do Mês</h3>
+                <p class="amount" style="color: var(--error);">R$ <%= monthlyExpenses || '0.00' %></p>
+            </div>
+        </div>
+
+        <!-- Gráficos -->
+        <div class="dashboard-grid">
+            <div class="chart-container">
+                <h3>Gastos por Categoria</h3>
+                <canvas id="expenseChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3>Visão Mensal</h3>
+                <canvas id="monthlyChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Transações Recentes -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3>Transações Recentes</h3>
+                <button class="btn btn-primary" onclick="openTransactionModal()">Nova Transação</button>
+            </div>
+            
+            <div class="transaction-list">
+                <% if (transactions && transactions.length > 0) { %>
+                    <% transactions.forEach(function(transaction) { %>
+                        <div class="transaction-item">
+                            <div>
+                                <strong><%= transaction.description %></strong>
+                                <p style="color: var(--text-secondary);"><%= transaction.category %></p>
+                            </div>
+                            <div style="text-align: right;">
+                                <p style="color: <%= transaction.type === 'EXPENSE' ? 'var(--error)' : 'var(--success)' %>;">
+                                    <%= transaction.type === 'EXPENSE' ? '-' : '+' %>R$ <%= transaction.amount %>
+                                </p>
+                                <small style="color: var(--text-secondary);"><%= new Date(transaction.date).toLocaleDateString() %></small>
+                            </div>
+                        </div>
+                    <% }); %>
+                <% } else { %>
+                    <p style="text-align: center; color: var(--text-secondary);">Nenhuma transação encontrada</p>
+                <% } %>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal de Nova Transação -->
+    <div id="transactionModal" class="modal">
+        <div class="modal-content">
+            <h2>Nova Transação</h2>
+            <form action="/transaction/add" method="POST" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="type">Tipo</label>
+                    <select id="type" name="type" class="form-control" required>
+                        <option value="INCOME">Receita</option>
+                        <option value="EXPENSE">Despesa</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="amount">Valor</label>
+                    <input type="number" id="amount" name="amount" step="0.01" class="form-control" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="description">Descrição</label>
+                    <input type="text" id="description" name="description" class="form-control" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="category">Categoria</label>
+                    <input type="text" id="category" name="category" class="form-control" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="receipt">Comprovante (opcional)</label>
+                    <input type="file" id="receipt" name="receipt" class="form-control" accept="image/*">
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="recurring" name="recurring">
+                        Transação Recorrente
+                    </label>
+                </div>
+
+                <div id="recurrenceOptions" style="display: none;">
+                    <div class="form-group">
+                        <label for="recurrencePeriod">Período de Recorrência</label>
+                        <select id="recurrencePeriod" name="recurrencePeriod" class="form-control">
+                            <option value="MONTHLY">Mensal</option>
+                            <option value="QUARTERLY">Trimestral</option>
+                            <option value="YEARLY">Anual</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="text-align: right; margin-top: 20px;">
+                    <button type="button" class="btn" onclick="closeTransactionModal()">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Salvar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Controle do tema escuro
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? null : 'dark';
+            const sunPath = document.querySelector('.sun');
+            const moonPath = document.querySelector('.moon');
+            
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('darkMode', newTheme ? 'enabled' : 'disabled');
+
+            // Alternar visibilidade dos ícones
+            if (newTheme === 'dark') {
+                sunPath.style.display = 'none';
+                moonPath.style.display = 'block';
+            } else {
+                sunPath.style.display = 'block';
+                moonPath.style.display = 'none';
+            }
+        }
+
+        // Verificar tema escuro ao carregar
+        if (localStorage.getItem('darkMode') === 'enabled') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.querySelector('.sun').style.display = 'none';
+            document.querySelector('.moon').style.display = 'block';
+        }
+
+        // Controle do modal
+        function openTransactionModal() {
+            document.getElementById('transactionModal').style.display = 'flex';
+        }
+
+        function closeTransactionModal() {
+            document.getElementById('transactionModal').style.display = 'none';
+        }
+
+        // Controle de transação recorrente
+        document.getElementById('recurring').addEventListener('change', function(e) {
+            document.getElementById('recurrenceOptions').style.display = 
+                e.target.checked ? 'block' : 'none';
+        });
+
+        // Gráfico de despesas por categoria
+        const expenseCtx = document.getElementById('expenseChart').getContext('2d');
+        new Chart(expenseCtx, {
+            type: 'doughnut',
+            data: {
+                labels: <%- JSON.stringify(expenseCategories || []) %>,
+                datasets: [{
+                    data: <%- JSON.stringify(expenseAmounts || []) %>,
+                    backgroundColor: [
+                        '#6200EA',
+                        '#9D46FF',
+                        '#BE9EFF',
+                        '#7C4DFF',
+                        '#B388FF'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false
+            }
+        });
+
+        // Gráfico de visão mensal
+        const monthlyCtx = document.getElementById('monthlyChart').getContext('2d');
+        new Chart(monthlyCtx, {
+            type: 'line',
+            data: {
+                labels: <%- JSON.stringify(monthlyLabels || []) %>,
+                datasets: [
+                    {
+                        label: 'Receitas',
+                        data: <%- JSON.stringify(monthlyIncomeData || []) %>,
+                        borderColor: '#00C853',
+                        fill: false
+                    },
+                    {
+                        label: 'Despesas',
+                        data: <%- JSON.stringify(monthlyExpenseData || []) %>,
+                        borderColor: '#FF3D00',
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html> 

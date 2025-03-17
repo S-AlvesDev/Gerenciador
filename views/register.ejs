@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registro - Gestão Financeira</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        .loading {
+            position: relative;
+            opacity: 0.7;
+            pointer-events: none;
+        }
+        .loading::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            top: 50%;
+            right: 10px;
+            transform: translateY(-50%);
+            border: 2px solid var(--primary-color);
+            border-radius: 50%;
+            border-right-color: transparent;
+            animation: rotate 0.8s linear infinite;
+        }
+        @keyframes rotate {
+            0% { transform: translateY(-50%) rotate(0deg); }
+            100% { transform: translateY(-50%) rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card" style="max-width: 400px; margin: 50px auto;">
+            <h1 style="text-align: center; color: var(--primary-color); margin-bottom: 30px;">Registro</h1>
+            
+            <% if (messages.error) { %>
+                <div class="alert alert-error"><%= messages.error %></div>
+            <% } %>
+            
+            <form id="registerForm" action="/register" method="POST" onsubmit="return validateForm(event)">
+                <div class="form-group">
+                    <label for="name">Nome Completo</label>
+                    <input type="text" id="name" name="name" class="form-control" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" class="form-control" required>
+                    <div id="emailError" class="alert alert-error" style="display: none; margin-top: 5px;">
+                        Email inválido
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Senha</label>
+                    <input type="password" id="password" name="password" class="form-control" required minlength="6">
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirmPassword">Confirmar Senha</label>
+                    <input type="password" id="confirmPassword" name="confirmPassword" class="form-control" required minlength="6">
+                </div>
+                
+                <div id="passwordError" class="alert alert-error" style="display: none;">
+                    As senhas não coincidem
+                </div>
+                
+                <button type="submit" id="submitButton" class="btn btn-primary" style="width: 100%;">Registrar</button>
+            </form>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                Já tem uma conta? 
+                <a href="/login" style="color: var(--primary-color); text-decoration: none;">
+                    Faça login aqui
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Verificar modo escuro
+        if (localStorage.getItem('darkMode') === 'enabled') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+        }
+
+        // Validação de senha
+        document.getElementById('confirmPassword').addEventListener('input', function() {
+            const password = document.getElementById('password').value;
+            const confirmPassword = this.value;
+            const errorDiv = document.getElementById('passwordError');
+            
+            if (password !== confirmPassword) {
+                errorDiv.style.display = 'block';
+            } else {
+                errorDiv.style.display = 'none';
+            }
+        });
+
+        // Validação do formulário
+        function validateForm(event) {
+            event.preventDefault();
+            
+            const form = document.getElementById('registerForm');
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+            const emailErrorDiv = document.getElementById('emailError');
+            const passwordErrorDiv = document.getElementById('passwordError');
+            
+            // Validar senhas
+            if (password !== confirmPassword) {
+                passwordErrorDiv.style.display = 'block';
+                return false;
+            }
+            
+            // Validar formato básico do email
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(email)) {
+                emailErrorDiv.textContent = 'Formato de email inválido';
+                emailErrorDiv.style.display = 'block';
+                return false;
+            }
+
+            // Validar domínios de email permitidos
+            const allowedDomains = [
+                'gmail.com',
+                'yahoo.com',
+                'yahoo.com.br',
+                'hotmail.com',
+                'outlook.com',
+                'live.com',
+                'icloud.com',
+                'aol.com',
+                'uol.com.br',
+                'bol.com.br',
+                'terra.com.br',
+                'ig.com.br',
+                'globo.com',
+                'protonmail.com',
+                'zoho.com'
+            ];
+
+            const domain = email.split('@')[1].toLowerCase();
+            if (!allowedDomains.includes(domain)) {
+                emailErrorDiv.textContent = 'Por favor, use um email do Gmail, Yahoo, Outlook ou outro provedor comum';
+                emailErrorDiv.style.display = 'block';
+                return false;
+            }
+
+            // Se chegou até aqui, tudo está válido
+            form.submit();
+            return true;
+        }
+    </script>
+</body>
+</html> 
