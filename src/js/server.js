@@ -32,60 +32,24 @@ app.set('view engine', 'ejs');
 app.set('views', viewsDir);
 
 // Configuração do MongoDB Store
-let mongoStore;
-
-// Função para inicializar o MongoDB e configurações
-async function initializeApp() {
-    if (!mongoStore) {
-        try {
-            const conn = await connectDB();
-            
-            // Só criar o mongoStore se a conexão foi bem sucedida
-            if (conn) {
-                mongoStore = MongoStore.create({
-                    mongoUrl: process.env.MONGODB_URI,
-                    ttl: 30 * 24 * 60 * 60, // 30 dias em segundos
-                    autoRemove: 'native',
-                    touchAfter: 24 * 3600 // 24 horas
-                });
-
-                // Configurar sessão
-                app.use(session({
-                    store: mongoStore,
-                    secret: process.env.SESSION_SECRET || 'your_session_secret_here',
-                    resave: false,
-                    saveUninitialized: false,
-                    cookie: {
-                        secure: process.env.NODE_ENV === 'production',
-                        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 dias
-                    }
-                }));
-            }
-        } catch (error) {
-            console.error('Erro ao inicializar MongoDB:', error);
-            throw error;
-        }
-    }
-}
-
-// Middleware para verificar conexão MongoDB
-app.use(async (req, res, next) => {
-    try {
-        // Tentar reconectar se necessário
-        await connectDB();
-        
-        if (!mongoStore) {
-            throw new Error('MongoDB store não está inicializado');
-        }
-        
-        next();
-    } catch (error) {
-        console.error('Erro de conexão MongoDB:', error);
-        return res.status(500).json({
-            error: 'Erro ao conectar ao banco de dados. Por favor, tente novamente em alguns instantes.'
-        });
-    }
+const mongoStore = MongoStore.create({
+    mongoUrl: process.env.MONGODB_URI,
+    ttl: 30 * 24 * 60 * 60, // 30 dias em segundos
+    autoRemove: 'native',
+    touchAfter: 24 * 3600 // 24 horas
 });
+
+// Configurar sessão
+app.use(session({
+    store: mongoStore,
+    secret: process.env.SESSION_SECRET || 'your_session_secret_here',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 dias
+    }
+}));
 
 // Configuração do Multer para upload de arquivos (memória para Vercel)
 const storage = multer.memoryStorage();
@@ -103,8 +67,8 @@ const transporter = nodemailer.createTransport({
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
     },
-    debug: true, // Enable debug logs
-    logger: true // Enable logger
+    debug: true,
+    logger: true
 });
 
 // Verificar configuração do email no início
@@ -749,14 +713,20 @@ process.on('uncaughtException', (error) => {
 });
 
 // Exportar o handler para Vercel
+let isConnected = false;
+
 module.exports = async (req, res) => {
     try {
-        await initializeApp();
+        if (!isConnected) {
+            await connectDB();
+            isConnected = true;
+            console.log('Conexão MongoDB estabelecida');
+        }
         return app(req, res);
     } catch (error) {
         console.error('Erro na inicialização:', error);
         return res.status(500).json({ 
-            error: 'Erro interno do servidor' 
+            error: 'Erro interno do servidor. Por favor, tente novamente em alguns instantes.' 
         });
     }
 }; 
