@@ -159,7 +159,7 @@ app.post('/register', async (req, res) => {
     
     try {
         // Verificar se o email já existe
-        const existingUser = await User.findOne({ email });
+        const existingUser = await User.findOne({ email }).lean();
         if (existingUser) {
             return res.render('register', { 
                 messages: { 
@@ -168,11 +168,11 @@ app.post('/register', async (req, res) => {
             });
         }
 
-        // Criar hash da senha
-        const hashedPassword = await bcrypt.hash(password, 10);
+        // Criar hash da senha com menos rounds para ser mais rápido
+        const hashedPassword = await bcrypt.hash(password, 8);
         
         // Gerar token de verificação
-        const verificationToken = crypto.randomBytes(32).toString('hex');
+        const verificationToken = crypto.randomBytes(16).toString('hex');
 
         // Criar novo usuário
         const user = new User({
@@ -183,9 +183,18 @@ app.post('/register', async (req, res) => {
             verified: false
         });
 
+        // Salvar usuário
         await user.save();
 
-        // Enviar email de verificação
+        // Enviar para página de sucesso imediatamente
+        res.render('login', { 
+            messages: { 
+                success: 'Registro realizado! Por favor, verifique seu email para ativar sua conta.',
+                showResend: true
+            } 
+        });
+
+        // Enviar email de verificação em background
         const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
         const mailOptions = {
             from: process.env.EMAIL_USER,
@@ -198,14 +207,10 @@ app.post('/register', async (req, res) => {
             `
         };
 
-        await transporter.sendMail(mailOptions);
-        
-        res.render('login', { 
-            messages: { 
-                success: 'Registro realizado! Por favor, verifique seu email para ativar sua conta.',
-                showResend: true
-            } 
+        transporter.sendMail(mailOptions).catch(err => {
+            console.error('Erro ao enviar email de verificação:', err);
         });
+
     } catch (error) {
         console.error('Erro no registro:', error);
         res.render('register', { 
@@ -504,7 +509,7 @@ app.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     
     try {
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email }).lean();
         
         if (!user) {
             return res.render('forgot-password', { 
@@ -512,15 +517,26 @@ app.post('/forgot-password', async (req, res) => {
             });
         }
         
-        // Gerar token de recuperação
-        const resetToken = crypto.randomBytes(32).toString('hex');
+        // Gerar token de recuperação menor
+        const resetToken = crypto.randomBytes(16).toString('hex');
         
         // Salvar token no banco
-        user.reset_token = resetToken;
-        user.reset_token_expires = new Date(Date.now() + 3600000); // 1 hora de validade
-        await user.save();
+        await User.updateOne(
+            { _id: user._id },
+            {
+                reset_token: resetToken,
+                reset_token_expires: new Date(Date.now() + 3600000) // 1 hora
+            }
+        );
         
-        // Enviar email com link de recuperação
+        // Enviar resposta imediatamente
+        res.render('forgot-password', { 
+            messages: { 
+                success: 'Email de recuperação enviado. Por favor, verifique sua caixa de entrada.' 
+            }
+        });
+
+        // Enviar email em background
         const resetLink = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
         const emailHtml = `
             <h1>Recuperação de Senha - Gestão Financeira</h1>
@@ -538,13 +554,10 @@ app.post('/forgot-password', async (req, res) => {
             html: emailHtml
         };
         
-        await transporter.sendMail(mailOptions);
-        
-        res.render('forgot-password', { 
-            messages: { 
-                success: 'Email de recuperação enviado. Por favor, verifique sua caixa de entrada.' 
-            }
+        transporter.sendMail(mailOptions).catch(err => {
+            console.error('Erro ao enviar email de recuperação:', err);
         });
+        
     } catch (error) {
         console.error('Erro ao solicitar recuperação de senha:', error);
         res.render('forgot-password', { 
@@ -574,7 +587,7 @@ app.get('/reset-password/:token', (req, res) => {
 });
 
 // Rota para processar redefinição de senha
-app.post('/reset-password/:token', (req, res) => {
+app.post('/reset-password/:token', async (req, res) => {
     const { token } = req.params;
     const { password, confirmPassword } = req.body;
     
@@ -585,30 +598,39 @@ app.post('/reset-password/:token', (req, res) => {
         });
     }
     
-    const hashedPassword = bcrypt.hashSync(password, 10);
-    
-    User.findOneAndUpdate(
-        { reset_token: token },
-        { 
-            $set: {
-                password: hashedPassword,
-                reset_token: null,
-                reset_token_expires: null
+    try {
+        const hashedPassword = await bcrypt.hash(password, 8);
+        
+        const result = await User.findOneAndUpdate(
+            { reset_token: token },
+            { 
+                $set: {
+                    password: hashedPassword
+                },
+                $unset: {
+                    reset_token: 1,
+                    reset_token_expires: 1
+                }
             }
-        },
-        (err, result) => {
-            if (err || !result) {
-                return res.render('reset-password', { 
-                    token,
-                    messages: { error: 'Erro ao redefinir senha' }
-                });
-            }
-            
-            res.render('login', { 
-                messages: { success: 'Senha redefinida com sucesso! Você já pode fazer login.' }
+        ).lean();
+
+        if (!result) {
+            return res.render('reset-password', { 
+                token,
+                messages: { error: 'Token inválido ou expirado' }
             });
         }
-    );
+        
+        res.render('login', { 
+            messages: { success: 'Senha redefinida com sucesso! Você já pode fazer login.' }
+        });
+    } catch (error) {
+        console.error('Erro ao redefinir senha:', error);
+        res.render('reset-password', { 
+            token,
+            messages: { error: 'Erro ao redefinir senha' }
+        });
+    }
 });
 
 // Rota de logout
