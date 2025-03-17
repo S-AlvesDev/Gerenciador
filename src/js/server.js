@@ -7,6 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
+const crypto = require('crypto');
 
 // Import database connection and models
 const connectDB = require('../config/database');
@@ -60,67 +61,6 @@ const transporter = nodemailer.createTransport({
     }
 });
 
-// Inicialização do banco de dados
-async function initializeDatabase() {
-    try {
-        // Criar tabela de sessões
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS "session" (
-                "sid" varchar NOT NULL COLLATE "default",
-                "sess" json NOT NULL,
-                "expire" timestamp(6) NOT NULL,
-                CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
-            );
-        `);
-
-        // Criar tabela de usuários
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                email VARCHAR(255) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                verified BOOLEAN DEFAULT FALSE,
-                verification_token VARCHAR(255),
-                reset_token VARCHAR(255),
-                reset_token_expires TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // Criar tabela de transações
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS transactions (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
-                type VARCHAR(10) NOT NULL,
-                amount DECIMAL(10,2) NOT NULL,
-                description TEXT,
-                category VARCHAR(50),
-                date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                receipt_path VARCHAR(255)
-            );
-        `);
-
-        // Criar tabela de orçamentos
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS budgets (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
-                category VARCHAR(50) NOT NULL,
-                amount DECIMAL(10,2) NOT NULL,
-                month INTEGER NOT NULL,
-                year INTEGER NOT NULL,
-                UNIQUE(user_id, category, month, year)
-            );
-        `);
-
-        console.log('Banco de dados inicializado com sucesso');
-    } catch (error) {
-        console.error('Erro ao inicializar banco de dados:', error);
-    }
-}
-
 // Middleware de autenticação
 function requireLogin(req, res, next) {
     if (req.session.userId) {
@@ -147,8 +87,7 @@ app.post('/login', async (req, res) => {
     const { email, password } = req.body;
     
     try {
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        const user = result.rows[0];
+        const user = await User.findOne({ email });
 
         if (user && await bcrypt.compare(password, user.password)) {
             if (!user.verified) {
@@ -159,7 +98,7 @@ app.post('/login', async (req, res) => {
                 });
             }
 
-            req.session.userId = user.id;
+            req.session.userId = user._id;
             res.redirect('/dashboard');
         } else {
             res.render('login', { 
@@ -187,8 +126,8 @@ app.post('/register', async (req, res) => {
     
     try {
         // Verificar se o email já existe
-        const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (existingUser.rows.length > 0) {
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
             return res.render('register', { 
                 messages: { 
                     error: 'Este email já está registrado' 
@@ -202,11 +141,16 @@ app.post('/register', async (req, res) => {
         // Gerar token de verificação
         const verificationToken = crypto.randomBytes(32).toString('hex');
 
-        // Inserir usuário
-        await pool.query(
-            'INSERT INTO users (name, email, password, verification_token) VALUES ($1, $2, $3, $4)',
-            [name, email, hashedPassword, verificationToken]
-        );
+        // Criar novo usuário
+        const user = new User({
+            name,
+            email,
+            password: hashedPassword,
+            verificationToken,
+            verified: false
+        });
+
+        await user.save();
 
         // Enviar email de verificação
         const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
@@ -240,138 +184,139 @@ app.post('/register', async (req, res) => {
 });
 
 // Rota para verificação de email
-app.get('/verify/:token', (req, res) => {
+app.get('/verify/:token', async (req, res) => {
     const { token } = req.params;
     
-    pool.query('UPDATE users SET verified = TRUE WHERE verification_token = $1', [token], function(err, result) {
-        if (err) {
-            return res.render('login', { messages: { error: 'Erro ao verificar email' } });
+    try {
+        const user = await User.findOneAndUpdate(
+            { verificationToken: token },
+            { 
+                $set: { verified: true },
+                $unset: { verificationToken: "" }
+            }
+        );
+
+        if (!user) {
+            return res.render('login', { messages: { error: 'Token de verificação inválido' } });
         }
-        
-        if (result.rowCount > 0) {
-            res.render('login', { messages: { success: 'Email verificado com sucesso! Você já pode fazer login.' } });
-        } else {
-            res.render('login', { messages: { error: 'Token de verificação inválido' } });
-        }
-    });
+
+        res.render('login', { messages: { success: 'Email verificado com sucesso! Você já pode fazer login.' } });
+    } catch (error) {
+        console.error('Erro ao verificar email:', error);
+        res.render('login', { messages: { error: 'Erro ao verificar email' } });
+    }
 });
 
 app.get('/dashboard', requireLogin, (req, res) => {
     const userId = req.session.userId;
     
     // Obter todas as transações do usuário
-    pool.query('SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC', [userId], (err, result) => {
-        if (err) {
-            console.error('Erro ao buscar transações:', err);
-            return res.render('dashboard', { 
-                user: req.session.user,
-                totalBalance: 0,
-                monthlyIncome: 0,
-                monthlyExpenses: 0,
-                transactions: [],
-                expenseCategories: [],
-                expenseAmounts: [],
-                monthlyLabels: [],
-                monthlyIncomeData: [],
-                monthlyExpenseData: [],
-                error: 'Erro ao carregar dados'
+    Transaction.find({ user_id: userId })
+        .sort({ date: -1 })
+        .limit(5)
+        .exec((err, transactions) => {
+            if (err) {
+                console.error('Erro ao buscar transações:', err);
+                return res.render('dashboard', { 
+                    user: req.session.user,
+                    totalBalance: 0,
+                    monthlyIncome: 0,
+                    monthlyExpenses: 0,
+                    transactions: [],
+                    expenseCategories: [],
+                    expenseAmounts: [],
+                    monthlyLabels: [],
+                    monthlyIncomeData: [],
+                    monthlyExpenseData: [],
+                    error: 'Erro ao carregar dados'
+                });
+            }
+
+            // Calcular saldo total e valores mensais
+            const currentDate = new Date();
+            const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+            
+            let totalBalance = 0;
+            let monthlyIncome = 0;
+            let monthlyExpenses = 0;
+            
+            // Para o gráfico de categorias
+            const expensesByCategory = {};
+            
+            // Para o gráfico mensal
+            const monthlyData = {};
+            
+            transactions.forEach(transaction => {
+                const amount = parseFloat(transaction.amount);
+                const transactionDate = new Date(transaction.date);
+                const monthKey = `${transactionDate.getFullYear()}-${(transactionDate.getMonth() + 1).toString().padStart(2, '0')}`;
+                
+                // Inicializar dados mensais se não existirem
+                if (!monthlyData[monthKey]) {
+                    monthlyData[monthKey] = { income: 0, expenses: 0 };
+                }
+                
+                // Atualizar saldo total e dados mensais
+                if (transaction.type === 'INCOME') {
+                    totalBalance += amount;
+                    monthlyData[monthKey].income += amount;
+                    // Se for deste mês, adicionar à receita mensal
+                    if (transactionDate >= firstDayOfMonth) {
+                        monthlyIncome += amount;
+                    }
+                } else if (transaction.type === 'EXPENSE') {
+                    totalBalance -= amount;
+                    monthlyData[monthKey].expenses += amount;
+                    // Se for deste mês, adicionar à despesa mensal
+                    if (transactionDate >= firstDayOfMonth) {
+                        monthlyExpenses += amount;
+                    }
+                    // Adicionar à categoria de despesas
+                    if (!expensesByCategory[transaction.category]) {
+                        expensesByCategory[transaction.category] = 0;
+                    }
+                    expensesByCategory[transaction.category] += amount;
+                }
             });
-        }
 
-        const transactions = result.rows;
+            // Preparar dados para os gráficos
+            const expenseCategories = Object.keys(expensesByCategory);
+            const expenseAmounts = expenseCategories.map(category => expensesByCategory[category]);
 
-        // Calcular saldo total e valores mensais
-        const currentDate = new Date();
-        const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-        
-        let totalBalance = 0;
-        let monthlyIncome = 0;
-        let monthlyExpenses = 0;
-        
-        // Para o gráfico de categorias
-        const expensesByCategory = {};
-        
-        // Para o gráfico mensal
-        const monthlyData = {};
-        
-        transactions.forEach(transaction => {
-            const amount = parseFloat(transaction.amount);
-            const transactionDate = new Date(transaction.date);
-            const monthKey = `${transactionDate.getFullYear()}-${(transactionDate.getMonth() + 1).toString().padStart(2, '0')}`;
-            
-            // Inicializar dados mensais se não existirem
-            if (!monthlyData[monthKey]) {
-                monthlyData[monthKey] = { income: 0, expenses: 0 };
-            }
-            
-            // Atualizar saldo total e dados mensais
-            if (transaction.type === 'INCOME') {
-                totalBalance += amount;
-                monthlyData[monthKey].income += amount;
-                // Se for deste mês, adicionar à receita mensal
-                if (transactionDate >= firstDayOfMonth) {
-                    monthlyIncome += amount;
-                }
-            } else if (transaction.type === 'EXPENSE') {
-                totalBalance -= amount;
-                monthlyData[monthKey].expenses += amount;
-                // Se for deste mês, adicionar à despesa mensal
-                if (transactionDate >= firstDayOfMonth) {
-                    monthlyExpenses += amount;
-                }
-                // Adicionar à categoria de despesas
-                if (!expensesByCategory[transaction.category]) {
-                    expensesByCategory[transaction.category] = 0;
-                }
-                expensesByCategory[transaction.category] += amount;
-            }
+            // Preparar dados mensais (últimos 6 meses)
+            const sortedMonths = Object.keys(monthlyData).sort().slice(-6);
+            const monthlyLabels = sortedMonths.map(month => {
+                const [year, monthNum] = month.split('-');
+                return `${monthNum}/${year}`;
+            });
+            const monthlyIncomeData = sortedMonths.map(month => monthlyData[month].income);
+            const monthlyExpenseData = sortedMonths.map(month => monthlyData[month].expenses);
+
+            // Renderizar dashboard com todos os dados
+            res.render('dashboard', {
+                user: req.session.user,
+                totalBalance: totalBalance.toFixed(2),
+                monthlyIncome: monthlyIncome.toFixed(2),
+                monthlyExpenses: monthlyExpenses.toFixed(2),
+                transactions: transactions,
+                expenseCategories,
+                expenseAmounts,
+                monthlyLabels,
+                monthlyIncomeData,
+                monthlyExpenseData,
+                error: null
+            });
         });
-
-        // Preparar dados para os gráficos
-        const expenseCategories = Object.keys(expensesByCategory);
-        const expenseAmounts = expenseCategories.map(category => expensesByCategory[category]);
-
-        // Preparar dados mensais (últimos 6 meses)
-        const sortedMonths = Object.keys(monthlyData).sort().slice(-6);
-        const monthlyLabels = sortedMonths.map(month => {
-            const [year, monthNum] = month.split('-');
-            return `${monthNum}/${year}`;
-        });
-        const monthlyIncomeData = sortedMonths.map(month => monthlyData[month].income);
-        const monthlyExpenseData = sortedMonths.map(month => monthlyData[month].expenses);
-
-        // Renderizar dashboard com todos os dados
-        res.render('dashboard', {
-            user: req.session.user,
-            totalBalance: totalBalance.toFixed(2),
-            monthlyIncome: monthlyIncome.toFixed(2),
-            monthlyExpenses: monthlyExpenses.toFixed(2),
-            transactions: transactions.slice(0, 5), // Últimas 5 transações
-            expenseCategories,
-            expenseAmounts,
-            monthlyLabels,
-            monthlyIncomeData,
-            monthlyExpenseData,
-            error: null
-        });
-    });
 });
 
 // Rota para reenviar email de verificação
 app.post('/resend-verification', async (req, res) => {
     const { email } = req.body;
     
-    pool.query('SELECT * FROM users WHERE email = $1', [email], async (err, result) => {
-        if (err || result.rows.length === 0) {
-            return res.json({ 
-                success: false, 
-                message: 'Email não encontrado' 
-            });
-        }
+    try {
+        const user = await User.findOne({ email });
         
-        const user = result.rows[0];
-        
-        if (user.verified) {
+        if (!user || user.verified) {
             return res.json({ 
                 success: false, 
                 message: 'Este email já está verificado' 
@@ -382,7 +327,8 @@ app.post('/resend-verification', async (req, res) => {
         const verificationToken = crypto.randomBytes(32).toString('hex');
         
         // Atualizar token no banco
-        await pool.query('UPDATE users SET verification_token = $1 WHERE email = $2', [verificationToken, email]);
+        user.verificationToken = verificationToken;
+        await user.save();
         
         // Enviar email de verificação
         const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
@@ -407,7 +353,13 @@ app.post('/resend-verification', async (req, res) => {
             success: true, 
             message: 'Email de verificação reenviado com sucesso' 
         });
-    });
+    } catch (error) {
+        console.error('Erro ao reenviar email de verificação:', error);
+        res.json({ 
+            success: false, 
+            message: 'Erro ao reenviar email de verificação' 
+        });
+    }
 });
 
 // Rota para adicionar transação
@@ -426,36 +378,34 @@ app.post('/transaction/add', requireLogin, upload.single('receipt'), (req, res) 
     }
 
     // Inserir transação no banco de dados
-    pool.query(
-        'INSERT INTO transactions (user_id, type, amount, description, category, date, receipt_path) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [
-            userId,
-            type,
-            amount,
-            description,
-            category,
-            date,
-            receiptUrl
-        ],
-        function(err, result) {
-            if (err) {
-                console.error('Erro ao adicionar transação:', err);
-                return res.status(500).json({ 
-                    success: false, 
-                    message: 'Erro ao adicionar transação' 
-                });
-            }
+    const transaction = new Transaction({
+        user_id: userId,
+        type,
+        amount,
+        description,
+        category,
+        date,
+        receipt_path: receiptUrl
+    });
 
-            // Se for uma transação recorrente, agendar próximas ocorrências
-            if (recurring === 'on') {
-                // Aqui você pode implementar a lógica para transações recorrentes
-                // Por exemplo, criar transações futuras com base no período
-            }
-
-            // Redirecionar para o dashboard com mensagem de sucesso
-            res.redirect('/dashboard?success=true');
+    transaction.save((err, result) => {
+        if (err) {
+            console.error('Erro ao adicionar transação:', err);
+            return res.status(500).json({ 
+                success: false, 
+                message: 'Erro ao adicionar transação' 
+            });
         }
-    );
+
+        // Se for uma transação recorrente, agendar próximas ocorrências
+        if (recurring === 'on') {
+            // Aqui você pode implementar a lógica para transações recorrentes
+            // Por exemplo, criar transações futuras com base no período
+        }
+
+        // Redirecionar para o dashboard com mensagem de sucesso
+        res.redirect('/dashboard?success=true');
+    });
 });
 
 // Rota para criar conta de teste (já verificada)
@@ -467,13 +417,13 @@ app.get('/create-test-account', (req, res) => {
     };
     
     // Primeiro, verificar se a conta já existe
-    pool.query('SELECT * FROM users WHERE email = $1', [testUser.email], async (err, result) => {
+    User.findOne({ email: testUser.email }, (err, existingUser) => {
         if (err) {
             console.error('Erro ao verificar usuário:', err);
             return res.send('Erro ao verificar se a conta existe.');
         }
         
-        if (result.rows.length > 0) {
+        if (existingUser) {
             // Se a conta existe, apenas mostrar as credenciais
             return res.send(`
                 <h1>Conta de teste já existe!</h1>
@@ -485,26 +435,29 @@ app.get('/create-test-account', (req, res) => {
         }
         
         // Se não existe, criar nova conta
-        const hashedPassword = await bcrypt.hash(testUser.password, 10);
+        const hashedPassword = bcrypt.hashSync(testUser.password, 10);
         
-        pool.query(
-            'INSERT INTO users (name, email, password, verified) VALUES ($1, $2, $3, TRUE)',
-            [testUser.name, testUser.email, hashedPassword],
-            function(err, result) {
-                if (err) {
-                    console.error('Erro ao criar conta:', err);
-                    return res.send('Erro ao criar conta de teste.');
-                }
-                
-                res.send(`
-                    <h1>Conta de teste criada com sucesso!</h1>
-                    <p>Use estas credenciais para fazer login:</p>
-                    <p>Email: ${testUser.email}</p>
-                    <p>Senha: ${testUser.password}</p>
-                    <p><a href="/login">Ir para o login</a></p>
-                `);
+        const user = new User({
+            name: testUser.name,
+            email: testUser.email,
+            password: hashedPassword,
+            verified: true
+        });
+
+        user.save((err, result) => {
+            if (err) {
+                console.error('Erro ao criar conta:', err);
+                return res.send('Erro ao criar conta de teste.');
             }
-        );
+            
+            res.send(`
+                <h1>Conta de teste criada com sucesso!</h1>
+                <p>Use estas credenciais para fazer login:</p>
+                <p>Email: ${testUser.email}</p>
+                <p>Senha: ${testUser.password}</p>
+                <p><a href="/login">Ir para o login</a></p>
+            `);
+        });
     });
 });
 
@@ -517,20 +470,22 @@ app.get('/forgot-password', (req, res) => {
 app.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     
-    pool.query('SELECT * FROM users WHERE email = $1', [email], async (err, result) => {
-        if (err || result.rows.length === 0) {
+    try {
+        const user = await User.findOne({ email });
+        
+        if (!user) {
             return res.render('forgot-password', { 
                 messages: { error: 'Email não encontrado' }
             });
         }
         
-        const user = result.rows[0];
-        
         // Gerar token de recuperação
         const resetToken = crypto.randomBytes(32).toString('hex');
         
         // Salvar token no banco
-        await pool.query('UPDATE users SET reset_token = $1, reset_token_expires = CURRENT_TIMESTAMP + INTERVAL \'1 hour\' WHERE email = $2', [resetToken, email]);
+        user.reset_token = resetToken;
+        user.reset_token_expires = new Date(Date.now() + 3600000); // 1 hora de validade
+        await user.save();
         
         // Enviar email com link de recuperação
         const resetLink = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
@@ -557,7 +512,14 @@ app.post('/forgot-password', async (req, res) => {
                 success: 'Email de recuperação enviado. Por favor, verifique sua caixa de entrada.' 
             }
         });
-    });
+    } catch (error) {
+        console.error('Erro ao solicitar recuperação de senha:', error);
+        res.render('forgot-password', { 
+            messages: { 
+                error: 'Erro ao solicitar recuperação de senha' 
+            }
+        });
+    }
 });
 
 // Rota para página de redefinição de senha
@@ -567,19 +529,15 @@ app.get('/reset-password/:token', (req, res) => {
     // Verificar se o token existe e não expirou (1 hora de validade)
     const oneHourAgo = new Date(Date.now() - 3600000); // 1 hora atrás
     
-    pool.query(
-        'SELECT * FROM users WHERE reset_token = $1 AND reset_token_expires > CURRENT_TIMESTAMP',
-        [token],
-        (err, result) => {
-            if (err || result.rows.length === 0) {
-                return res.render('login', { 
-                    messages: { error: 'Link de recuperação inválido ou expirado' }
-                });
-            }
-            
-            res.render('reset-password', { token, messages: {} });
+    User.findOne({ reset_token: token, reset_token_expires: { $gt: oneHourAgo } }, (err, user) => {
+        if (err || !user) {
+            return res.render('login', { 
+                messages: { error: 'Link de recuperação inválido ou expirado' }
+            });
         }
-    );
+        
+        res.render('reset-password', { token, messages: {} });
+    });
 });
 
 // Rota para processar redefinição de senha
@@ -596,11 +554,17 @@ app.post('/reset-password/:token', (req, res) => {
     
     const hashedPassword = bcrypt.hashSync(password, 10);
     
-    pool.query(
-        'UPDATE users SET password = $1, reset_token = NULL, reset_token_expires = NULL WHERE reset_token = $2',
-        [hashedPassword, token],
-        function(err, result) {
-            if (err || result.rowCount === 0) {
+    User.findOneAndUpdate(
+        { reset_token: token },
+        { 
+            $set: {
+                password: hashedPassword,
+                reset_token: null,
+                reset_token_expires: null
+            }
+        },
+        (err, result) => {
+            if (err || !result) {
                 return res.render('reset-password', { 
                     token,
                     messages: { error: 'Erro ao redefinir senha' }
@@ -627,7 +591,7 @@ app.get('/logout', (req, res) => {
 });
 
 // Inicializar banco de dados e iniciar servidor
-initializeDatabase().then(() => {
+connectDB().then(() => {
     app.listen(port, () => {
         console.log(`Servidor rodando em http://localhost:${port}`);
     });
