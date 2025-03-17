@@ -102,6 +102,17 @@ const transporter = nodemailer.createTransport({
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
+    },
+    debug: true, // Enable debug logs
+    logger: true // Enable logger
+});
+
+// Verificar configuração do email no início
+transporter.verify(function(error, success) {
+    if (error) {
+        console.error('Erro na configuração do email:', error);
+    } else {
+        console.log('Servidor de email pronto para enviar mensagens');
     }
 });
 
@@ -227,22 +238,32 @@ app.post('/register', async (req, res) => {
         // Salvar usuário
         await user.save();
 
-        // Enviar email de verificação em background
+        // Preparar email de verificação
         const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
         const mailOptions = {
-            from: process.env.EMAIL_USER,
+            from: `"Gestão Financeira" <${process.env.EMAIL_USER}>`,
             to: email,
             subject: 'Verifique seu email - Gestão Financeira',
             html: `
                 <h1>Bem-vindo ao Gestão Financeira!</h1>
+                <p>Olá ${name},</p>
                 <p>Por favor, clique no link abaixo para verificar seu email:</p>
                 <a href="${verificationLink}">${verificationLink}</a>
+                <p>Se você não solicitou este email, por favor ignore.</p>
             `
         };
 
-        transporter.sendMail(mailOptions).catch(err => {
-            console.error('Erro ao enviar email de verificação:', err);
-        });
+        console.log('Tentando enviar email para:', email);
+        console.log('Link de verificação:', verificationLink);
+
+        // Tentar enviar o email
+        try {
+            await transporter.sendMail(mailOptions);
+            console.log('Email de verificação enviado com sucesso para:', email);
+        } catch (emailError) {
+            console.error('Erro ao enviar email de verificação:', emailError);
+            // Ainda retornamos sucesso para o usuário, mas logamos o erro
+        }
 
         // Enviar para página de sucesso
         return res.render('login', { 
@@ -256,7 +277,7 @@ app.post('/register', async (req, res) => {
         console.error('Erro no registro:', error);
         return res.render('register', { 
             messages: { 
-                error: 'Erro ao registrar usuário' 
+                error: 'Erro ao criar conta. Por favor, tente novamente.' 
             } 
         });
     }
