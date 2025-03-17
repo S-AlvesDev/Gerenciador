@@ -9,7 +9,10 @@
     "routes": [
         {
             "src": "/(.*)",
-            "dest": "src/js/server.js"
+            "dest": "src/js/server.js",
+            "headers": {
+                "cache-control": "s-maxage=0"
+            }
         }
     ],
     "env": {

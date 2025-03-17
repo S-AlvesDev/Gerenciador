@@ -47,7 +47,8 @@ app.use(session({
     saveUninitialized: false,
     cookie: {
         secure: process.env.NODE_ENV === 'production',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 dias
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 dias
+        sameSite: 'lax'
     }
 }));
 
@@ -66,17 +67,6 @@ const transporter = nodemailer.createTransport({
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
-    },
-    debug: true,
-    logger: true
-});
-
-// Verificar configuração do email no início
-transporter.verify(function(error, success) {
-    if (error) {
-        console.error('Erro na configuração do email:', error);
-    } else {
-        console.log('Servidor de email pronto para enviar mensagens');
     }
 });
 
@@ -89,39 +79,9 @@ function requireLogin(req, res, next) {
     }
 }
 
-// Middleware de tratamento de erros
-app.use((err, req, res, next) => {
-    console.error('Erro não tratado:', err);
-    
-    if (err.name === 'TimeoutError') {
-        return res.status(504).render('error', {
-            error: 'A operação demorou muito tempo. Por favor, tente novamente.'
-        });
-    }
-    
-    if (err.name === 'MongoError' || err.name === 'MongooseError') {
-        return res.status(500).render('error', {
-            error: 'Erro de conexão com o banco de dados. Por favor, tente novamente.'
-        });
-    }
-    
-    return res.status(500).render('error', { 
-        error: process.env.NODE_ENV === 'production' 
-            ? 'Ocorreu um erro interno no servidor.' 
-            : err.message 
-    });
-});
-
 // Rotas
 app.get('/', (req, res) => {
-    try {
-        return res.render('login', { messages: {} });
-    } catch (error) {
-        console.error('Erro ao renderizar página de login:', error);
-        return res.status(500).render('error', { 
-            error: 'Erro ao carregar a página'
-        });
-    }
+    return res.render('login', { messages: {} });
 });
 
 app.get('/login', (req, res) => {
@@ -138,30 +98,40 @@ app.post('/login', async (req, res) => {
     try {
         const user = await User.findOne({ email });
 
-        if (user && await bcrypt.compare(password, user.password)) {
-            if (!user.verified) {
-                return res.render('login', { 
-                    messages: { 
-                        error: 'Por favor, verifique seu email antes de fazer login' 
-                    } 
-                });
-            }
+        if (!user) {
+            return res.render('login', { 
+                messages: { error: 'Email ou senha incorretos' } 
+            });
+        }
 
-            req.session.userId = user._id;
-            return res.redirect('/dashboard');
-        } else {
+        const isValidPassword = await bcrypt.compare(password, user.password);
+        if (!isValidPassword) {
+            return res.render('login', { 
+                messages: { error: 'Email ou senha incorretos' } 
+            });
+        }
+
+        if (!user.verified) {
             return res.render('login', { 
                 messages: { 
-                    error: 'Email ou senha incorretos' 
+                    error: 'Por favor, verifique seu email antes de fazer login',
+                    showResend: true
                 } 
             });
         }
+
+        req.session.userId = user._id;
+        req.session.user = {
+            id: user._id,
+            name: user.name,
+            email: user.email
+        };
+
+        return res.redirect('/dashboard');
     } catch (error) {
         console.error('Erro no login:', error);
         return res.render('login', { 
-            messages: { 
-                error: 'Erro ao fazer login' 
-            } 
+            messages: { error: 'Erro ao fazer login. Tente novamente.' } 
         });
     }
 });
@@ -170,33 +140,6 @@ app.get('/register', (req, res) => {
     return res.render('register', { messages: {} });
 });
 
-// Função auxiliar para enviar email de verificação
-async function sendVerificationEmail(user, req) {
-    try {
-        const verificationLink = `${req.protocol}://${req.get('host')}/verify/${user.verificationToken}`;
-        const mailOptions = {
-            from: `"Gestão Financeira" <${process.env.EMAIL_USER}>`,
-            to: user.email,
-            subject: 'Verifique seu email - Gestão Financeira',
-            html: `
-                <h1>Bem-vindo ao Gestão Financeira!</h1>
-                <p>Olá ${user.name},</p>
-                <p>Por favor, clique no link abaixo para verificar seu email:</p>
-                <a href="${verificationLink}">${verificationLink}</a>
-                <p>Se você não solicitou este email, por favor ignore.</p>
-            `
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log('Email de verificação enviado com sucesso para:', user.email);
-        return true;
-    } catch (error) {
-        console.error('Erro ao enviar email de verificação:', error);
-        return false;
-    }
-}
-
-// Rota de registro
 app.post('/register', async (req, res) => {
     console.log('Iniciando processo de registro');
     const { name, email, password } = req.body;
@@ -211,10 +154,10 @@ app.post('/register', async (req, res) => {
             });
         }
 
-        // Criar hash da senha com menos rounds para ser mais rápido
+        // Criar hash da senha
         const hashedPassword = await bcrypt.hash(password, 8);
         
-        // Gerar token de verificação menor
+        // Gerar token de verificação
         const verificationToken = crypto.randomBytes(16).toString('hex');
 
         // Criar novo usuário
@@ -230,31 +173,33 @@ app.post('/register', async (req, res) => {
         await user.save();
         console.log('Usuário criado com sucesso:', email);
 
-        // Enviar email de verificação em background
-        sendVerificationEmail(user, req)
-            .then(success => {
-                if (!success) {
-                    console.log('Email não enviado, mas usuário foi criado:', email);
-                }
-            })
-            .catch(err => {
-                console.error('Erro no envio de email em background:', err);
-            });
+        // Preparar email de verificação
+        const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
+        const mailOptions = {
+            from: `"Gestão Financeira" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: 'Verifique seu email - Gestão Financeira',
+            html: `
+                <h1>Bem-vindo ao Gestão Financeira!</h1>
+                <p>Olá ${name},</p>
+                <p>Por favor, clique no link abaixo para verificar seu email:</p>
+                <a href="${verificationLink}">${verificationLink}</a>
+                <p>Se você não solicitou este email, por favor ignore.</p>
+            `
+        };
+
+        // Enviar email em background
+        transporter.sendMail(mailOptions)
+            .then(() => console.log('Email de verificação enviado com sucesso para:', email))
+            .catch(err => console.error('Erro ao enviar email de verificação:', err));
 
         // Retornar resposta imediatamente
-        return res.render('login', { 
-            messages: { 
-                success: 'Registro realizado! Por favor, verifique seu email para ativar sua conta.',
-                showResend: true
-            } 
-        });
+        return res.redirect('/login?verification_pending=true');
 
     } catch (error) {
         console.error('Erro no registro:', error);
         return res.render('register', { 
-            messages: { 
-                error: 'Erro ao criar conta. Por favor, tente novamente.' 
-            } 
+            messages: { error: 'Erro ao criar conta. Tente novamente.' } 
         });
     }
 });
@@ -711,23 +656,18 @@ app.use((req, res) => {
     res.status(404).render('error', { error: 'Página não encontrada' });
 });
 
-// Tratamento de erros não capturados
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error);
-    // Fechar o servidor graciosamente
-    server.close(() => {
-        process.exit(1);
+// Tratamento de erros
+app.use((err, req, res, next) => {
+    console.error('Erro não tratado:', err);
+    res.status(500).render('error', { 
+        error: 'Ocorreu um erro interno. Por favor, tente novamente.' 
     });
 });
 
-// Exportar o handler para Vercel
+// Inicialização do servidor para Vercel
 let isConnected = false;
 
-module.exports = async (req, res) => {
+const handler = async (req, res) => {
     try {
         if (!isConnected) {
             await connectDB();
@@ -738,7 +678,10 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error('Erro na inicialização:', error);
         return res.status(500).json({ 
-            error: 'Erro interno do servidor. Por favor, tente novamente em alguns instantes.' 
+            error: 'Erro interno do servidor. Por favor, tente novamente.' 
         });
     }
-}; 
+};
+
+// Exportar o handler
+module.exports = handler; 
