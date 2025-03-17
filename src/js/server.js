@@ -17,16 +17,34 @@ const Transaction = require('../models/Transaction');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Configurar diretórios absolutos
+const rootDir = path.resolve(__dirname, '../..');
+const viewsDir = path.join(rootDir, 'views');
+const publicDir = path.join(rootDir, 'public');
+const cssDir = path.join(rootDir, 'src/css');
+
+// Middleware para logging de erros
+app.use((req, res, next) => {
+    const originalSend = res.send;
+    res.send = function (data) {
+        console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Status: ${res.statusCode}`);
+        return originalSend.apply(res, arguments);
+    };
+    next();
+});
+
 // Connect to MongoDB
-connectDB();
+connectDB().catch(err => {
+    console.error('Erro ao conectar ao MongoDB:', err);
+});
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
-app.use('/css', express.static('src/css'));
+app.use(express.static(publicDir));
+app.use('/css', express.static(cssDir));
 app.set('view engine', 'ejs');
-app.set('views', './views');
+app.set('views', viewsDir);
 
 // Configuração da sessão com MongoDB
 app.use(session({
@@ -70,9 +88,24 @@ function requireLogin(req, res, next) {
     }
 }
 
+// Middleware de tratamento de erros
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).render('error', { 
+        error: process.env.NODE_ENV === 'production' 
+            ? 'Ocorreu um erro interno no servidor.' 
+            : err.message 
+    });
+});
+
 // Rotas
 app.get('/', (req, res) => {
-    res.render('login');
+    try {
+        res.render('login', { messages: {} });
+    } catch (error) {
+        console.error('Erro ao renderizar página de login:', error);
+        res.status(500).send('Erro ao carregar a página');
+    }
 });
 
 app.get('/login', (req, res) => {
@@ -590,9 +623,25 @@ app.get('/logout', (req, res) => {
     });
 });
 
-// Inicializar banco de dados e iniciar servidor
-connectDB().then(() => {
-    app.listen(port, () => {
-        console.log(`Servidor rodando em http://localhost:${port}`);
+// Tratamento para rotas não encontradas
+app.use((req, res) => {
+    res.status(404).render('error', { error: 'Página não encontrada' });
+});
+
+// Iniciar o servidor
+const server = app.listen(port, () => {
+    console.log(`Servidor rodando na porta ${port}`);
+});
+
+// Tratamento de erros não capturados
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    // Fechar o servidor graciosamente
+    server.close(() => {
+        process.exit(1);
     });
 }); 
