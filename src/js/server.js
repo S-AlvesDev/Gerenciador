@@ -23,21 +23,7 @@ const viewsDir = path.join(rootDir, 'views');
 const publicDir = path.join(rootDir, 'public');
 const cssDir = path.join(rootDir, 'src/css');
 
-// Middleware para logging de erros
-app.use(async (req, res, next) => {
-    try {
-        // Garantir conexão com MongoDB antes de cada requisição
-        await connectDB();
-        next();
-    } catch (error) {
-        console.error('Erro ao conectar ao MongoDB:', error);
-        res.status(500).render('error', { 
-            error: 'Erro ao conectar ao banco de dados. Por favor, tente novamente.'
-        });
-    }
-});
-
-// Middleware
+// Configurações básicas do Express
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(publicDir));
@@ -45,20 +31,56 @@ app.use('/css', express.static(cssDir));
 app.set('view engine', 'ejs');
 app.set('views', viewsDir);
 
-// Configuração da sessão com MongoDB
-app.use(session({
-    store: MongoStore.create({
-        mongoUrl: process.env.MONGODB_URI,
-        ttl: 30 * 24 * 60 * 60 // 30 dias em segundos
-    }),
-    secret: process.env.SESSION_SECRET || 'your_session_secret_here',
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 dias
+// Inicializar conexão com MongoDB
+let mongoStore;
+
+(async () => {
+    try {
+        await connectDB();
+        console.log('MongoDB conectado inicialmente');
+        
+        // Configurar session store após conexão bem-sucedida
+        mongoStore = MongoStore.create({
+            mongoUrl: process.env.MONGODB_URI,
+            ttl: 30 * 24 * 60 * 60 // 30 dias em segundos
+        });
+
+        // Configurar sessão
+        app.use(session({
+            store: mongoStore,
+            secret: process.env.SESSION_SECRET || 'your_session_secret_here',
+            resave: false,
+            saveUninitialized: false,
+            cookie: {
+                secure: process.env.NODE_ENV === 'production',
+                maxAge: 30 * 24 * 60 * 60 * 1000 // 30 dias
+            }
+        }));
+
+        // Iniciar servidor após configuração bem-sucedida
+        app.listen(port, () => {
+            console.log(`Servidor rodando na porta ${port}`);
+        });
+    } catch (error) {
+        console.error('Erro na inicialização:', error);
     }
-}));
+})();
+
+// Middleware para verificar conexão MongoDB
+app.use(async (req, res, next) => {
+    try {
+        if (!mongoStore) {
+            throw new Error('MongoDB store não está inicializado');
+        }
+        await connectDB();
+        next();
+    } catch (error) {
+        console.error('Erro de conexão MongoDB:', error);
+        return res.status(500).render('error', {
+            error: 'Erro ao conectar ao banco de dados. Por favor, tente novamente.'
+        });
+    }
+});
 
 // Configuração do Multer para upload de arquivos (memória para Vercel)
 const storage = multer.memoryStorage();
@@ -91,14 +113,12 @@ function requireLogin(req, res, next) {
 app.use((err, req, res, next) => {
     console.error('Erro não tratado:', err);
     
-    // Verificar se é um erro de timeout
     if (err.name === 'TimeoutError') {
         return res.status(504).render('error', {
             error: 'A operação demorou muito tempo. Por favor, tente novamente.'
         });
     }
     
-    // Verificar se é um erro de conexão com MongoDB
     if (err.name === 'MongoError' || err.name === 'MongooseError') {
         return res.status(500).render('error', {
             error: 'Erro de conexão com o banco de dados. Por favor, tente novamente.'
@@ -662,11 +682,6 @@ app.get('/logout', (req, res) => {
 // Tratamento para rotas não encontradas
 app.use((req, res) => {
     res.status(404).render('error', { error: 'Página não encontrada' });
-});
-
-// Iniciar o servidor
-const server = app.listen(port, () => {
-    console.log(`Servidor rodando na porta ${port}`);
 });
 
 // Tratamento de erros não capturados
