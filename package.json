@@ -3,13 +3,10 @@
   "version": "1.0.0",
   "description": "Sistema de Gestão Financeira Pessoal",
   "main": "src/js/server.js",
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "scripts": {
     "start": "node src/js/server.js",
     "dev": "nodemon src/js/server.js",
-    "vercel-build": "npm install"
+    "build": "echo 'No build step required'"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
