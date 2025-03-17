@@ -170,24 +170,51 @@ app.get('/register', (req, res) => {
     return res.render('register', { messages: {} });
 });
 
+// Função auxiliar para enviar email de verificação
+async function sendVerificationEmail(user, req) {
+    try {
+        const verificationLink = `${req.protocol}://${req.get('host')}/verify/${user.verificationToken}`;
+        const mailOptions = {
+            from: `"Gestão Financeira" <${process.env.EMAIL_USER}>`,
+            to: user.email,
+            subject: 'Verifique seu email - Gestão Financeira',
+            html: `
+                <h1>Bem-vindo ao Gestão Financeira!</h1>
+                <p>Olá ${user.name},</p>
+                <p>Por favor, clique no link abaixo para verificar seu email:</p>
+                <a href="${verificationLink}">${verificationLink}</a>
+                <p>Se você não solicitou este email, por favor ignore.</p>
+            `
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log('Email de verificação enviado com sucesso para:', user.email);
+        return true;
+    } catch (error) {
+        console.error('Erro ao enviar email de verificação:', error);
+        return false;
+    }
+}
+
+// Rota de registro
 app.post('/register', async (req, res) => {
+    console.log('Iniciando processo de registro');
     const { name, email, password } = req.body;
     
     try {
         // Verificar se o email já existe
-        const existingUser = await User.findOne({ email }).lean();
+        const existingUser = await User.findOne({ email }).select('email').lean();
         if (existingUser) {
+            console.log('Email já registrado:', email);
             return res.render('register', { 
-                messages: { 
-                    error: 'Este email já está registrado' 
-                } 
+                messages: { error: 'Este email já está registrado' } 
             });
         }
 
         // Criar hash da senha com menos rounds para ser mais rápido
         const hashedPassword = await bcrypt.hash(password, 8);
         
-        // Gerar token de verificação
+        // Gerar token de verificação menor
         const verificationToken = crypto.randomBytes(16).toString('hex');
 
         // Criar novo usuário
@@ -201,35 +228,20 @@ app.post('/register', async (req, res) => {
 
         // Salvar usuário
         await user.save();
+        console.log('Usuário criado com sucesso:', email);
 
-        // Preparar email de verificação
-        const verificationLink = `${req.protocol}://${req.get('host')}/verify/${verificationToken}`;
-        const mailOptions = {
-            from: `"Gestão Financeira" <${process.env.EMAIL_USER}>`,
-            to: email,
-            subject: 'Verifique seu email - Gestão Financeira',
-            html: `
-                <h1>Bem-vindo ao Gestão Financeira!</h1>
-                <p>Olá ${name},</p>
-                <p>Por favor, clique no link abaixo para verificar seu email:</p>
-                <a href="${verificationLink}">${verificationLink}</a>
-                <p>Se você não solicitou este email, por favor ignore.</p>
-            `
-        };
+        // Enviar email de verificação em background
+        sendVerificationEmail(user, req)
+            .then(success => {
+                if (!success) {
+                    console.log('Email não enviado, mas usuário foi criado:', email);
+                }
+            })
+            .catch(err => {
+                console.error('Erro no envio de email em background:', err);
+            });
 
-        console.log('Tentando enviar email para:', email);
-        console.log('Link de verificação:', verificationLink);
-
-        // Tentar enviar o email
-        try {
-            await transporter.sendMail(mailOptions);
-            console.log('Email de verificação enviado com sucesso para:', email);
-        } catch (emailError) {
-            console.error('Erro ao enviar email de verificação:', emailError);
-            // Ainda retornamos sucesso para o usuário, mas logamos o erro
-        }
-
-        // Enviar para página de sucesso
+        // Retornar resposta imediatamente
         return res.render('login', { 
             messages: { 
                 success: 'Registro realizado! Por favor, verifique seu email para ativar sua conta.',
