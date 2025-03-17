@@ -1,23 +1,23 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const pgSession = require('connect-pg-simple')(session);
-const { Pool } = require('pg');
+const MongoStore = require('connect-mongo');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
-const fs = require('fs');
+
+// Import database connection and models
+const connectDB = require('../config/database');
+const User = require('../models/User');
+const Transaction = require('../models/Transaction');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Configuração do PostgreSQL
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Connect to MongoDB
+connectDB();
 
 // Middleware
 app.use(express.json());
@@ -27,13 +27,13 @@ app.use('/css', express.static('src/css'));
 app.set('view engine', 'ejs');
 app.set('views', './views');
 
-// Configuração da sessão
+// Configuração da sessão com MongoDB
 app.use(session({
-    store: new pgSession({
-        pool,
-        tableName: 'session'
+    store: MongoStore.create({
+        mongoUrl: process.env.MONGODB_URI,
+        ttl: 30 * 24 * 60 * 60 // 30 dias em segundos
     }),
-    secret: process.env.SESSION_SECRET,
+    secret: process.env.SESSION_SECRET || 'your_session_secret_here',
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -42,21 +42,14 @@ app.use(session({
     }
 }));
 
-// Configuração do Multer para upload de arquivos
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/');
-    },
-    filename: function (req, file, cb) {
-        cb(null, Date.now() + path.extname(file.originalname));
+// Configuração do Multer para upload de arquivos (memória para Vercel)
+const storage = multer.memoryStorage();
+const upload = multer({ 
+    storage: storage,
+    limits: {
+        fileSize: 5 * 1024 * 1024 // 5MB
     }
 });
-const upload = multer({ storage: storage });
-
-// Criar pasta de uploads se não existir
-if (!fs.existsSync('uploads')) {
-    fs.mkdirSync('uploads');
-}
 
 // Configuração do Nodemailer
 const transporter = nodemailer.createTransport({
@@ -139,7 +132,7 @@ function requireLogin(req, res, next) {
 
 // Rotas
 app.get('/', (req, res) => {
-    res.redirect('/login');
+    res.render('login');
 });
 
 app.get('/login', (req, res) => {
